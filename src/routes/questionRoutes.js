@@ -1,8 +1,9 @@
 import express from 'express'
-import { generateQuestions } from '../controllers/questionControllers.js';
+import { fetchQuestions, generateQuestions } from '../controllers/questionControllers.js';
 
 const questionRoute = express.Router();
 
-questionRoute.post("/generate-questions", generateQuestions)
+questionRoute.post("/generate-questions", generateQuestions);
+questionRoute.get("/fetch-questions", fetchQuestions);
 
 export default questionRoute

@@ -68,12 +68,13 @@ export const createRound = async (req, res) => {
 
 export const fetchCompany = async (req, res) => {
     try {
-        const { userId } = req.body;
+        const { userId } = req.query; 
+
         if (!userId) {
-            return res.status(404).json({
-                message: "User is not authorized",
+            return res.status(400).json({
+                message: "User ID is required",
                 status: false
-            })
+            });
         }
 
         const companyRef = db.collection("companies");
@@ -83,29 +84,29 @@ export const fetchCompany = async (req, res) => {
             return res.status(404).json({
                 message: "No companies found",
                 status: false
-            })
+            });
         }
 
         const companies = snapShot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
-        }))
+        }));
 
         return res.status(200).json({
             status: true,
             companies
-        })
+        });
     } catch (error) {
         return res.status(500).json({
             success: false,
             error: error.message
         });
     }
-}
+};
 
 export const fetchRound = async (req, res) => {
     try {
-        const { companyId } = req.body;
+        const { companyId } = req.query; 
 
         if (!companyId) {
             return res.status(400).json({
