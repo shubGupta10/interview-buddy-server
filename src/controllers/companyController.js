@@ -44,27 +44,57 @@ export const createCompany = async (req, res) => {
 export const createRound = async (req, res) => {
     try {
         const { companyId, roundName } = req.body;
+        
         if (!companyId || !roundName) {
-            return res.status(404).json({
+            return res.status(400).json({
                 message: "All fields are required",
                 status: false,
-            })
+            });
         }
+
+        const validRoundNames = [
+            "Technical Interview",
+            "Machine Coding",
+            "Behavioral Interview",
+            "System Design",
+            "HR Round",
+            "Managerial Round"
+        ];
+
+        if (!validRoundNames.includes(roundName)) {
+            return res.status(400).json({
+                message: "Invalid round type selected",
+                status: false,
+            });
+        }
+        
+        // Check if the round type already exists for this company
+        const existingRounds = await db.collection("companies").doc(companyId).collection("rounds")
+            .where("roundName", "==", roundName)
+            .get();
+            
+        if (!existingRounds.empty) {
+            return res.status(400).json({
+                message: "This round type already exists for this company",
+                status: false,
+            });
+        }
+
         const roundRef = db.collection("companies").doc(companyId).collection("rounds").doc();
         await roundRef.set({
             roundName,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        })
+        });
 
         return res.status(200).json({
             success: true,
             roundId: roundRef.id
-        })
+        });
     } catch (error) {
         console.error("Error creating round:", error);
         res.status(500).json({ success: false, error: error.message });
     }
-}
+};
 
 export const fetchCompany = async (req, res) => {
     try {
