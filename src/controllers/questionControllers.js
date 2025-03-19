@@ -143,7 +143,6 @@ export const fetchQuestions = async (req, res) => {
     }
 };
 
-
 export const fetchRounds = async (req, res) => {
     try {
         const { companyId } = req.query;
@@ -224,4 +223,5 @@ export const fetchQuestionsByRound = async (req, res) => {
         });
     }
 };
+
 

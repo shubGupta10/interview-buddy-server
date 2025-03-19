@@ -84,6 +84,60 @@ export const deleteCompany = async (req, res) => {
     }
 }
 
+export const deleteRound = async (req, res) => {
+    try {
+        const {userId, companyId, roundId} = req.body;
+        if(!userId || !companyId || !roundId){
+            return res.status(404).json({
+                message: "User is unauthorized",
+                status: false
+            })
+        }
+
+        const companyRef = db.collection("companies").doc(companyId);
+        const companyDoc = await companyRef.get();
+
+        if (!companyDoc.exists) {
+            return res.status(404).json({
+                success: false,
+                message: "Company not found",
+            });
+        }
+
+        if (companyDoc.data().userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: "Unauthorized: You can only delete rounds from your own company",
+            });
+        }
+
+        const roundRef = companyRef.collection("rounds").doc(roundId);
+        const roundDoc = await roundRef.get();
+
+        if (!roundDoc.exists) {
+            return res.status(404).json({
+                success: false,
+                message: "Round not found",
+            });
+        }
+
+        await roundRef.delete();
+
+        return res.status(200).json({
+            success: true,
+            message: "Round deleted successfully",
+        });
+
+    } catch (error) {
+        console.error("Error deleting round:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error: error.message,
+        });
+    }
+};
+
 export const createRound = async (req, res) => {
     try {
         const { companyId, roundName } = req.body;
@@ -211,6 +265,46 @@ export const fetchRound = async (req, res) => {
     } catch (error) {
         return res.status(500).json({
             success: false,
+            error: error.message
+        });
+    }
+};
+
+export const fetchDashboardDetails = async (req, res) => {
+    try {
+        const { userId } = req.query;
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                message: "User ID is required"
+            });
+        }
+
+        // Fetch companies created by the user
+        const companySnapshot = await db.collection("companies").where("userId", "==", userId).get();
+        const totalCompanies = companySnapshot.size;
+
+        let totalRounds = 0;
+
+        // Fetch all rounds associated with user's companies
+        for (const companyDoc of companySnapshot.docs) {
+            const roundsSnapshot = await db.collection("companies").doc(companyDoc.id).collection("rounds").get();
+            totalRounds += roundsSnapshot.size;
+        }
+
+        return res.status(200).json({
+            success: true,
+            dashboardDetails: {
+                totalCompanies,
+                totalRounds
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching dashboard details:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
             error: error.message
         });
     }
