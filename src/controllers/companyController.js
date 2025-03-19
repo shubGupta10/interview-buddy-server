@@ -41,6 +41,49 @@ export const createCompany = async (req, res) => {
     }
 }
 
+export const deleteCompany = async (req, res) => {
+    try {
+        const {userId, companyId} = req.body;
+        if(!userId || !companyId){
+            return res.status(400).json({
+                message: "User is not authorized",
+                status: false
+            })
+        }
+
+        const companyRef = await db.collection("companies").doc(companyId);
+        const companyDoc = await companyRef.get();
+
+        if(!companyDoc.exists){
+            return res.status(404).json({
+                message: "Company not found",
+                status: false
+            })
+        }
+
+        if(companyDoc.data().userId !== userId){
+            return res.status(403).json({
+                message: "Unauthorized: You can only delete your own company",
+                success: false
+            })
+        }
+
+        await companyRef.delete();
+
+        return res.status(200).json({
+            message: "Company deleted successfully",
+            success: true
+        })
+    } catch (error) {
+        console.error("Error deleting company:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error: error.message
+        });
+    }
+}
+
 export const createRound = async (req, res) => {
     try {
         const { companyId, roundName } = req.body;
