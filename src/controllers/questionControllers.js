@@ -1,6 +1,7 @@
-import { generateInterviewQuestions } from "../ai/generate-questions.js";
+import generateInterviewQuestions from '../ai/generate-questions.js'
 import { db } from "../firebase/firebaseAdmin.js";
 import admin from 'firebase-admin'
+import explainQuestionAnsDeeply from '../ai/explain-questions.js';
 
 export const generateQuestions = async (req, res) => {
     try {
@@ -35,10 +36,10 @@ export const generateQuestions = async (req, res) => {
         const generatedAt = admin.firestore.FieldValue.serverTimestamp();
 
         const question = await generateInterviewQuestions(roundName, difficulty, language);
-        const cleanedResponse = question.replace(/```json\n|\n```/g, '').trim();
-        const parsedQuestions = JSON.parse(cleanedResponse);
+        // const cleanedResponse = question.replace(/```json\n|\n```/g, '').trim();
+        // const parsedQuestions = JSON.parse(cleanedResponse);
 
-        const questionsArray = parsedQuestions.map((q) => {
+        const questionsArray = question.map((q) => {
             const questionRef = roundRef.collection("questions").doc();
             batch.set(questionRef, {
                 ...q,
@@ -224,4 +225,30 @@ export const fetchQuestionsByRound = async (req, res) => {
     }
 };
 
+export const explainQuestion = async (req, res) => {
+    try {
+        const { questionId, question } = req.body;
+        if (!questionId || !question) {
+            return res.status(400).json({
+                message: "Question ID and question are required.",
+                status: 400
+            });
+        }
+
+        const explanation = await explainQuestionAnsDeeply(question);
+
+        return res.status(200).json({
+            message: "Explanation generated successfully.",
+            explanation,
+            status: 200
+        });
+    } catch (error) {
+        console.error("Error generating explanation:", error);
+        return res.status(500).json({
+            message: "Failed to generate explanation.",
+            error: error.message,
+            status: 500
+        });
+    }
+}
 
