@@ -2,10 +2,15 @@ import generateInterviewQuestions from '../ai/generate-questions.js'
 import { db } from "../firebase/firebaseAdmin.js";
 import admin from 'firebase-admin'
 import explainQuestionAnsDeeply from '../ai/explain-questions.js';
+import redis from '../redis/redis.js';
 
 export const generateQuestions = async (req, res) => {
     try {
-        const { companyId, roundId, roundName, difficulty, language } = req.body;
+        const { userId, companyId, roundId, roundName, difficulty, language } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ message: "User ID is required", status: false });
+        }
 
         const roundsWithoutLanguage = ["Behavioral Interview", "HR Round", "Managerial Round"];
 
@@ -30,14 +35,27 @@ export const generateQuestions = async (req, res) => {
             });
         }
 
+        const redisKey = `rate_limit:${userId}`;
+        const requestCount = Number((await redis.get(redisKey)) || 0);
+
+        if (requestCount >= 5) {
+            return res.status(429).json({
+                message: "You have reached the limit of 5 requests per day. Please try again tomorrow.",
+                status: false,
+            });
+        }
+
+        if (requestCount === 0) {
+            await redis.setex(redisKey, 86400, 1);
+        } else {
+            await redis.incr(redisKey);
+        }
+
         const batch = db.batch();
         const roundRef = db.collection("companies").doc(companyId).collection("rounds").doc(roundId);
 
         const generatedAt = admin.firestore.FieldValue.serverTimestamp();
-
         const question = await generateInterviewQuestions(roundName, difficulty, language);
-        // const cleanedResponse = question.replace(/```json\n|\n```/g, '').trim();
-        // const parsedQuestions = JSON.parse(cleanedResponse);
 
         const questionsArray = question.map((q) => {
             const questionRef = roundRef.collection("questions").doc();
