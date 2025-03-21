@@ -3,6 +3,7 @@ import { db } from "../firebase/firebaseAdmin.js";
 import admin from 'firebase-admin'
 import explainQuestionAnsDeeply from '../ai/explain-questions.js';
 import redis from '../redis/redis.js';
+import moment from "moment";
 
 export const generateQuestions = async (req, res) => {
     try {
@@ -36,17 +37,17 @@ export const generateQuestions = async (req, res) => {
         }
 
         const redisKey = `rate_limit:${userId}`;
-        const requestCount = Number((await redis.get(redisKey)) || 0);
+        const requestCount = Number(await redis.get(redisKey)) || 0;
 
         if (requestCount >= 5) {
             return res.status(429).json({
-                message: "You have reached the limit of 5 requests per day. Please try again tomorrow.",
+                message: "You have reached the limit of 5 requests per 6 hours. Please try again later.",
                 status: false,
             });
         }
 
         if (requestCount === 0) {
-            await redis.setex(redisKey, 86400, 1);
+            await redis.setex(redisKey, 21600, 1); 
         } else {
             await redis.incr(redisKey);
         }
@@ -62,7 +63,7 @@ export const generateQuestions = async (req, res) => {
             batch.set(questionRef, {
                 ...q,
                 roundId,
-                ...(language && { language }), 
+                ...(language && { language }),
                 createdAt: generatedAt,
                 generatedAt: generatedAt
             });
@@ -94,8 +95,6 @@ export const fetchQuestions = async (req, res) => {
             });
         }
 
-        console.log("Fetching questions for:", { companyId, roundId, language });
-
         const questionRef = db
             .collection("companies")
             .doc(companyId)
@@ -103,50 +102,31 @@ export const fetchQuestions = async (req, res) => {
             .doc(roundId)
             .collection("questions");
 
-        let latestBatchQuery;
+        let query;
 
         // If language is provided, filter by language
         if (language) {
-            latestBatchQuery = await questionRef
+            query = questionRef
                 .where("language", "==", language)
                 .orderBy("generatedAt", "desc")
-                .limit(1)
-                .get();
+                .limit(20);
         } else {
-            // If language is NOT provided, fetch latest questions without language filter
-            latestBatchQuery = await questionRef
+            query = questionRef
                 .orderBy("generatedAt", "desc")
-                .limit(1)
-                .get();
+                .limit(20);
         }
 
-        if (latestBatchQuery.empty) {
+        const snapShot = await query.get();
+
+        if (snapShot.empty) {
             console.log("No questions found for the given criteria.");
             return res.status(200).json({ success: true, questions: [] });
-        }
-
-        const latestGeneratedAt = latestBatchQuery.docs[0].data().generatedAt;
-
-        let snapShot;
-
-        // Fetch all questions with the latest generatedAt
-        if (language) {
-            snapShot = await questionRef
-                .where("language", "==", language)
-                .where("generatedAt", "==", latestGeneratedAt)
-                .get();
-        } else {
-            snapShot = await questionRef
-                .where("generatedAt", "==", latestGeneratedAt)
-                .get();
         }
 
         const questions = snapShot.docs.map((doc) => ({
             id: doc.id,
             ...doc.data(),
         }));
-
-        console.log("Fetched Questions:", questions);
 
         return res.status(200).json({
             success: true,
@@ -269,4 +249,30 @@ export const explainQuestion = async (req, res) => {
         });
     }
 }
+
+export const trackGenerationLimit = async (req, res) => {
+    try {
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({ message: "User ID is required", status: false });
+        }
+
+        const redisKey = `rate_limit:${userId}`;
+        const requestCount = Number(await redis.get(redisKey)) || 0;
+        const ttl = await redis.ttl(redisKey);
+
+        const timeLeft = ttl > 0 ? moment.duration(ttl, "seconds").humanize() : "Now";
+
+        return res.status(200).json({
+            success: true,
+            message: "Generation limit status retrieved successfully",
+            used: requestCount, 
+            remaining: Math.max(0, 5 - requestCount),
+            resetIn: timeLeft
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
 

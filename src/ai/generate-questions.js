@@ -37,7 +37,7 @@ const chainPrompt = new LLMChain({
   prompt
 });
 
-export default async function generateInterviewQA(roundName, difficulty, language, num_questions = 20) {
+export default async function generateInterviewQA(roundName, difficulty, language, num_questions = 25) {
   const result = await chainPrompt.call({
     round: roundName,
     difficulty,
