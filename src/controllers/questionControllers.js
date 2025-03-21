@@ -5,6 +5,12 @@ import explainQuestionAnsDeeply from '../ai/explain-questions.js';
 import redis from '../redis/redis.js';
 import moment from "moment";
 
+const CACHE_TTL = {
+  QUESTIONS: 1800, // 30 minutes
+  ROUNDS: 3600,    // 1 hour
+  RATE_LIMIT: 21600 // 6 hours
+};
+
 export const generateQuestions = async (req, res) => {
     try {
         const { userId, companyId, roundId, roundName, difficulty, language } = req.body;
@@ -37,19 +43,26 @@ export const generateQuestions = async (req, res) => {
         }
 
         const redisKey = `rate_limit:${userId}`;
-        const requestCount = Number(await redis.get(redisKey)) || 0;
+        let requestCount = 0;
+        
+        try {
+            requestCount = Number(await redis.get(redisKey)) || 0;
 
-        if (requestCount >= 5) {
-            return res.status(429).json({
-                message: "You have reached the limit of 5 requests per 6 hours. Please try again later.",
-                status: false,
-            });
-        }
+            if (requestCount >= 5) {
+                return res.status(429).json({
+                    message: "You have reached the limit of 5 requests per 6 hours. Please try again later.",
+                    status: false,
+                });
+            }
 
-        if (requestCount === 0) {
-            await redis.setex(redisKey, 21600, 1); 
-        } else {
-            await redis.incr(redisKey);
+            if (requestCount === 0) {
+                await redis.set(redisKey, 1, { ex: CACHE_TTL.RATE_LIMIT }); 
+            } else {
+                await redis.incr(redisKey);
+            }
+        } catch (redisError) {
+            console.error("Redis error during rate limiting:", redisError);
+            // Continue execution even if Redis fails
         }
 
         const batch = db.batch();
@@ -72,6 +85,24 @@ export const generateQuestions = async (req, res) => {
 
         await batch.commit();
 
+        // Invalidate cache for questions in this round
+        try {
+            // Invalidate specific question caches
+            await redis.del(`questions:${companyId}:${roundId}`);
+            if (language) {
+                await redis.del(`questions:${companyId}:${roundId}:${language}`);
+            }
+            if (difficulty) {
+                await redis.del(`questions:${companyId}:${roundId}:difficulty:${difficulty}`);
+            }
+            if (language && difficulty) {
+                await redis.del(`questions:${companyId}:${roundId}:${language}:${difficulty}`);
+            }
+        } catch (redisError) {
+            console.error("Redis error during cache invalidation:", redisError);
+            // Continue execution even if Redis fails
+        }
+
         return res.status(200).json({
             success: true,
             message: "Questions generated successfully",
@@ -93,6 +124,34 @@ export const fetchQuestions = async (req, res) => {
                 success: false,
                 message: "Company Id and Round Id are required",
             });
+        }
+
+        let cachedData = null;
+        // Try to get from cache, but don't fail if Redis is unavailable
+        try {
+            const cacheKey = language
+                ? `questions:${companyId}:${roundId}:${language}`
+                : `questions:${companyId}:${roundId}`;
+
+            cachedData = await redis.get(cacheKey);
+            if (cachedData) {
+                try {
+                    // Check if it's a string before parsing
+                    if (typeof cachedData === 'string') {
+                        const parsedData = JSON.parse(cachedData);
+                        return res.status(200).json(parsedData);
+                    } else {
+                        // It's already an object, use directly
+                        return res.status(200).json(cachedData);
+                    }
+                } catch (parseError) {
+                    console.error("Error parsing Redis data:", parseError);
+                    // Continue to Firestore if parsing fails
+                }
+            }
+        } catch (redisError) {
+            console.error("Redis error during fetchQuestions:", redisError);
+            // Continue to Firestore if Redis fails
         }
 
         const questionRef = db
@@ -118,20 +177,31 @@ export const fetchQuestions = async (req, res) => {
 
         const snapShot = await query.get();
 
-        if (snapShot.empty) {
-            console.log("No questions found for the given criteria.");
-            return res.status(200).json({ success: true, questions: [] });
-        }
-
-        const questions = snapShot.docs.map((doc) => ({
+        const questions = snapShot.empty ? [] : snapShot.docs.map((doc) => ({
             id: doc.id,
             ...doc.data(),
         }));
 
-        return res.status(200).json({
+        const response = {
             success: true,
             questions,
-        });
+        };
+
+        // Try to set cache, but don't fail if Redis is unavailable
+        try {
+            const cacheKey = language
+                ? `questions:${companyId}:${roundId}:${language}`
+                : `questions:${companyId}:${roundId}`;
+                
+            // Ensure we're storing a JSON string
+            const jsonData = JSON.stringify(response);
+            await redis.set(cacheKey, jsonData, { ex: CACHE_TTL.QUESTIONS });
+        } catch (redisError) {
+            console.error("Redis error during cache setting:", redisError);
+            // Continue execution even if Redis fails
+        }
+
+        return res.status(200).json(response);
     } catch (error) {
         console.error("Error fetching questions:", error.stack || error);
         return res.status(500).json({
@@ -140,7 +210,7 @@ export const fetchQuestions = async (req, res) => {
             error: error.message,
         });
     }
-};
+}
 
 export const fetchRounds = async (req, res) => {
     try {
@@ -153,6 +223,30 @@ export const fetchRounds = async (req, res) => {
             });
         }
 
+        let cachedData = null;
+        // Try to get from cache, but don't fail if Redis is unavailable
+        try {
+            const cacheKey = `rounds:${companyId}`;
+            cachedData = await redis.get(cacheKey);
+            if (cachedData) {
+                try {
+                    // Check if it's a string before parsing
+                    if (typeof cachedData === 'string') {
+                        const parsedData = JSON.parse(cachedData);
+                        return res.status(200).json(parsedData);
+                    } else {
+                        // It's already an object, use directly
+                        return res.status(200).json(cachedData);
+                    }
+                } catch (parseError) {
+                    console.error("Error parsing Redis data:", parseError);
+                    // Continue to Firestore if parsing fails
+                }
+            }
+        } catch (redisError) {
+            console.error("Redis error during fetchRounds:", redisError);
+        }
+
         const roundsSnapshot = await db
             .collection("companies")
             .doc(companyId)
@@ -160,13 +254,28 @@ export const fetchRounds = async (req, res) => {
             .orderBy("createdAt", "desc")
             .get();
 
-        if (roundsSnapshot.empty) {
-            return res.status(200).json({ success: true, rounds: [] });
-        }
-
-        const rounds = roundsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        const rounds = roundsSnapshot.empty ? [] : roundsSnapshot.docs.map((doc) => ({ 
+            id: doc.id, 
+            ...doc.data() 
+        }));
         
-        return res.status(200).json({ success: true, rounds });
+        const response = { 
+            success: true, 
+            rounds 
+        };
+
+        // Try to set cache, but don't fail if Redis is unavailable
+        try {
+            const cacheKey = `rounds:${companyId}`;
+            // Ensure we're storing a JSON string
+            const jsonData = JSON.stringify(response);
+            await redis.set(cacheKey, jsonData, { ex: CACHE_TTL.ROUNDS });
+        } catch (redisError) {
+            console.error("Redis error during cache setting:", redisError);
+            // Continue execution even if Redis fails
+        }
+        
+        return res.status(200).json(response);
     } catch (error) {
         console.error("Error fetching rounds:", error);
         return res.status(500).json({
@@ -188,6 +297,39 @@ export const fetchQuestionsByRound = async (req, res) => {
             });
         }
 
+        let cachedData = null;
+        // Try to get from cache, but don't fail if Redis is unavailable
+        try {
+            let cacheKey = `questions:${companyId}:${roundId}`;
+            if (language && difficulty) {
+                cacheKey = `questions:${companyId}:${roundId}:${language}:${difficulty}`;
+            } else if (language) {
+                cacheKey = `questions:${companyId}:${roundId}:${language}`;
+            } else if (difficulty) {
+                cacheKey = `questions:${companyId}:${roundId}:difficulty:${difficulty}`;
+            }
+
+            cachedData = await redis.get(cacheKey);
+            if (cachedData) {
+                try {
+                    // Check if it's a string before parsing
+                    if (typeof cachedData === 'string') {
+                        const parsedData = JSON.parse(cachedData);
+                        return res.status(200).json(parsedData);
+                    } else {
+                        // It's already an object, use directly
+                        return res.status(200).json(cachedData);
+                    }
+                } catch (parseError) {
+                    console.error("Error parsing Redis data:", parseError);
+                    // Continue to Firestore if parsing fails
+                }
+            }
+        } catch (redisError) {
+            console.error("Redis error during fetchQuestionsByRound:", redisError);
+            // Continue to Firestore if Redis fails
+        }
+
         let query = db
             .collection("companies")
             .doc(companyId)
@@ -206,13 +348,36 @@ export const fetchQuestionsByRound = async (req, res) => {
 
         const questionsSnapshot = await query.get();
 
-        if (questionsSnapshot.empty) {
-            return res.status(200).json({ success: true, questions: [] });
-        }
-
-        const questions = questionsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        const questions = questionsSnapshot.empty ? [] : questionsSnapshot.docs.map((doc) => ({ 
+            id: doc.id, 
+            ...doc.data() 
+        }));
         
-        return res.status(200).json({ success: true, questions });
+        const response = { 
+            success: true, 
+            questions 
+        };
+
+        // Try to set cache, but don't fail if Redis is unavailable
+        try {
+            let cacheKey = `questions:${companyId}:${roundId}`;
+            if (language && difficulty) {
+                cacheKey = `questions:${companyId}:${roundId}:${language}:${difficulty}`;
+            } else if (language) {
+                cacheKey = `questions:${companyId}:${roundId}:${language}`;
+            } else if (difficulty) {
+                cacheKey = `questions:${companyId}:${roundId}:difficulty:${difficulty}`;
+            }
+
+            // Ensure we're storing a JSON string
+            const jsonData = JSON.stringify(response);
+            await redis.set(cacheKey, jsonData, { ex: CACHE_TTL.QUESTIONS });
+        } catch (redisError) {
+            console.error("Redis error during cache setting:", redisError);
+            // Continue execution even if Redis fails
+        }
+        
+        return res.status(200).json(response);
     } catch (error) {
         console.error("Error fetching questions:", error);
         return res.status(500).json({
@@ -233,13 +398,51 @@ export const explainQuestion = async (req, res) => {
             });
         }
 
+        let cachedData = null;
+        // Try to get from cache, but don't fail if Redis is unavailable
+        try {
+            const cacheKey = `explanation:${questionId}`;
+            cachedData = await redis.get(cacheKey);
+            if (cachedData) {
+                try {
+                    // Check if it's a string before parsing
+                    if (typeof cachedData === 'string') {
+                        const parsedData = JSON.parse(cachedData);
+                        return res.status(200).json(parsedData);
+                    } else {
+                        // It's already an object, use directly
+                        return res.status(200).json(cachedData);
+                    }
+                } catch (parseError) {
+                    console.error("Error parsing Redis data:", parseError);
+                    // Continue if parsing fails
+                }
+            }
+        } catch (redisError) {
+            console.error("Redis error during explainQuestion:", redisError);
+            // Continue if Redis fails
+        }
+
         const explanation = await explainQuestionAnsDeeply(question);
 
-        return res.status(200).json({
+        const response = {
             message: "Explanation generated successfully.",
             explanation,
             status: 200
-        });
+        };
+
+        // Try to set cache, but don't fail if Redis is unavailable
+        try {
+            const cacheKey = `explanation:${questionId}`;
+            // Ensure we're storing a JSON string
+            const jsonData = JSON.stringify(response);
+            await redis.set(cacheKey, jsonData, { ex: CACHE_TTL.QUESTIONS });
+        } catch (redisError) {
+            console.error("Redis error during cache setting:", redisError);
+            // Continue execution even if Redis fails
+        }
+
+        return res.status(200).json(response);
     } catch (error) {
         console.error("Error generating explanation:", error);
         return res.status(500).json({
@@ -259,8 +462,17 @@ export const trackGenerationLimit = async (req, res) => {
         }
 
         const redisKey = `rate_limit:${userId}`;
-        const requestCount = Number(await redis.get(redisKey)) || 0;
-        const ttl = await redis.ttl(redisKey);
+        let requestCount = 0;
+        let ttl = 0;
+
+        // Try to get from Redis, but don't fail if Redis is unavailable
+        try {
+            requestCount = Number(await redis.get(redisKey)) || 0;
+            ttl = await redis.ttl(redisKey);
+        } catch (redisError) {
+            console.error("Redis error during trackGenerationLimit:", redisError);
+            // Continue execution with default values if Redis fails
+        }
 
         const timeLeft = ttl > 0 ? moment.duration(ttl, "seconds").humanize() : "Now";
 
@@ -275,4 +487,3 @@ export const trackGenerationLimit = async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 };
-
