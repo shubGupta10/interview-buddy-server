@@ -13,6 +13,7 @@ const CACHE_TTL = {
 export const createCompany = async (req, res) => {
     try {
         const { userId, companyName } = req.body;
+
         if (!userId || !companyName) {
             return res.status(400).json({
                 success: false,
@@ -33,11 +34,13 @@ export const createCompany = async (req, res) => {
         }
 
         const companyRef = db.collection("companies").doc();
-        await companyRef.set({
+        const newCompany = {
             userId,
             companyName,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        };
+
+        await companyRef.set(newCompany);
 
         // Invalidate cache for this user's companies and dashboard
         try {
@@ -45,7 +48,27 @@ export const createCompany = async (req, res) => {
             await redis.del(`dashboard:${userId}`);
         } catch (redisError) {
             console.error("Redis error during cache invalidation:", redisError);
-            // Continue execution even if Redis fails
+        }
+
+        // Fetch updated company list from Firestore
+        const companySnap = await db.collection("companies")
+            .where("userId", "==", userId)
+            .get();
+
+        const companies = companySnap.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+        }));
+
+        // Cache updated company list
+        try {
+            await redis.set(
+                `companies:${userId}`,
+                JSON.stringify({ success: true, companies }),
+                { ex: CACHE_TTL.COMPANIES }
+            );
+        } catch (redisError) {
+            console.error("Redis error while setting cache:", redisError);
         }
 
         return res.status(200).json({
@@ -245,7 +268,7 @@ export const createRound = async (req, res) => {
 
 export const fetchCompany = async (req, res) => {
     try {
-        const { userId } = req.query;
+        const userId = req.query.userId || req.headers["x-user-id"];
 
         if (!userId) {
             return res.status(400).json({
@@ -310,7 +333,7 @@ export const fetchCompany = async (req, res) => {
 
 export const fetchRound = async (req, res) => {
     try {
-        const { companyId } = req.query; 
+        const { companyId } = req.query;
 
         if (!companyId) {
             return res.status(400).json({
@@ -323,7 +346,7 @@ export const fetchRound = async (req, res) => {
         try {
             const cacheKey = `rounds:${companyId}`;
             const cachedData = await redis.get(cacheKey);
-            
+
             // Only attempt to parse if cachedData exists and is a string
             if (cachedData && typeof cachedData === 'string') {
                 return res.status(200).json(JSON.parse(cachedData));
@@ -375,7 +398,7 @@ export const fetchRound = async (req, res) => {
 
 export const fetchDashboardDetails = async (req, res) => {
     try {
-        const { userId } = req.query;
+        const userId = req.query.userId || req.headers["x-user-id"];
 
         if (!userId) {
             return res.status(400).json({
@@ -388,7 +411,7 @@ export const fetchDashboardDetails = async (req, res) => {
         try {
             const cacheKey = `dashboard:${userId}`;
             const cachedData = await redis.get(cacheKey);
-            
+
             // Only attempt to parse if cachedData exists and is a string
             if (cachedData && typeof cachedData === 'string') {
                 return res.status(200).json(JSON.parse(cachedData));

@@ -390,12 +390,20 @@ export const fetchQuestionsByRound = async (req, res) => {
 
 export const explainQuestion = async (req, res) => {
     try {
-        const { questionId, question } = req.body;
+        
+        const { questionId, question, userId } = req.body;
         if (!questionId || !question) {
             return res.status(400).json({
                 message: "Question ID and question are required.",
                 status: 400
             });
+        }
+
+        if(!userId){
+            return res.status(404).json({
+                message: "User not found",
+                status: false
+            })
         }
 
         let cachedData = null;
