@@ -6,9 +6,9 @@ import redis from '../redis/redis.js';
 import moment from "moment";
 
 const CACHE_TTL = {
-  QUESTIONS: 1800, // 30 minutes
-  ROUNDS: 3600,    // 1 hour
-  RATE_LIMIT: 21600 // 6 hours
+    QUESTIONS: 1800, // 30 minutes
+    ROUNDS: 3600,    // 1 hour
+    RATE_LIMIT: 21600 // 6 hours
 };
 
 export const generateQuestions = async (req, res) => {
@@ -44,7 +44,7 @@ export const generateQuestions = async (req, res) => {
 
         const redisKey = `rate_limit:${userId}`;
         let requestCount = 0;
-        
+
         try {
             requestCount = Number(await redis.get(redisKey)) || 0;
 
@@ -56,7 +56,7 @@ export const generateQuestions = async (req, res) => {
             }
 
             if (requestCount === 0) {
-                await redis.set(redisKey, 1, { ex: CACHE_TTL.RATE_LIMIT }); 
+                await redis.set(redisKey, 1, { ex: CACHE_TTL.RATE_LIMIT });
             } else {
                 await redis.incr(redisKey);
             }
@@ -114,6 +114,131 @@ export const generateQuestions = async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 };
+
+export const deleteQuestionsByRound = async (req, res) => {
+    try {
+        const { roundId, companyId } = req.body;
+        if (!roundId || !companyId) {
+            return res.status(400).json({
+                message: "Round ID and Company ID are required",
+                status: false
+            })
+        }
+
+        const roundRef = db.collection("companies").doc(companyId).collection("rounds").doc(roundId);
+        const questionRef = roundRef.collection("questions");
+
+        const snapShot = await questionRef.get();
+        if (snapShot.empty) {
+            return res.status(404).json({
+                message: "No questions found for this round",
+                status: false
+            })
+        }
+        const batch = db.batch();
+        snapShot.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+        await batch.commit();
+
+        try {
+            await redis.del(`questions:${companyId}:${roundId}`);
+        } catch (redisError) {
+            console.error("Redis cache deletion error:", redisError);
+        }
+
+        return res.status(200).json({
+            message: "All questions deleted successfully",
+            status: true
+        })
+    } catch (error) {
+        return res.status(500).json({ message: error.message, success: false });
+    }
+}
+
+export const deleteQuestionByLanguage = async (req, res) => {
+    try {
+        const { companyId, roundId, language } = req.body;
+        if (!companyId || !roundId || !language) {
+            return res.status(400).json({
+                message: "Company ID, Round ID and Language are required",
+                status: false
+            })
+        }
+
+        const questionRef = db.collection("companies").doc(companyId).collection("rounds").doc(roundId).collection("questions");
+        const snapShot = await questionRef.where("language", "==", language).get();
+
+        if(snapShot.empty){
+            return res.status(404).json({
+                message: "No questions found for this language",
+                status: false
+            })
+        }
+
+        const batch = db.batch();
+        snapShot.forEach(doc => {
+            batch.delete(doc.ref);
+        })
+        await batch.commit();
+
+        try {
+            await redis.del(`questions:${companyId}:${roundId}`);
+        } catch (error) {
+            console.error("Redis cache deletion error:", redisError);
+        }
+
+        return res.status(200).json({
+            message: "All questions deleted successfully",
+            status: true
+        })
+    } catch (error) {
+        return res.status(500).json({ message: error.message, success: false });
+    }
+
+
+
+}
+
+export const deleteQuestionByDifficulty = async (req, res) => {
+    try {
+        const {companyId, roundId, difficulty} = req.body;
+        if(!companyId || !roundId || !difficulty){
+            return res.status(400).json({
+                message: "Company ID, Round ID and Difficulty are required",
+                status: false
+            })
+        }
+
+        const questionRef = db.collection("companies").doc(companyId).collection("rounds").doc(roundId).collection("questions");
+        const snapShot = await questionRef.where("difficulty", "==", difficulty).get();
+        if(snapShot.empty){
+            return res.status(404).json({
+                message: "No questions found for this difficulty",
+                status: false
+            })
+        }
+
+        const batch = db.batch();
+        snapShot.forEach(doc => {
+            batch.delete(doc.ref);
+        })
+        await batch.commit();
+
+        try {
+            redis.del(`questions:${companyId}:${roundId}`);
+        } catch (error) {
+            console.error("Redis cache deletion error:", redisError);
+        }
+
+        return res.status(200).json({
+            message: "All questions deleted successfully",
+            status: true
+        })
+    } catch (error) {
+        return res.status(500).json({ message: error.message, success: false });
+    }
+}
 
 export const fetchQuestions = async (req, res) => {
     try {
@@ -192,7 +317,7 @@ export const fetchQuestions = async (req, res) => {
             const cacheKey = language
                 ? `questions:${companyId}:${roundId}:${language}`
                 : `questions:${companyId}:${roundId}`;
-                
+
             // Ensure we're storing a JSON string
             const jsonData = JSON.stringify(response);
             await redis.set(cacheKey, jsonData, { ex: CACHE_TTL.QUESTIONS });
@@ -215,7 +340,7 @@ export const fetchQuestions = async (req, res) => {
 export const fetchRounds = async (req, res) => {
     try {
         const { companyId } = req.query;
-        
+
         if (!companyId) {
             return res.status(400).json({
                 success: false,
@@ -254,14 +379,14 @@ export const fetchRounds = async (req, res) => {
             .orderBy("createdAt", "desc")
             .get();
 
-        const rounds = roundsSnapshot.empty ? [] : roundsSnapshot.docs.map((doc) => ({ 
-            id: doc.id, 
-            ...doc.data() 
+        const rounds = roundsSnapshot.empty ? [] : roundsSnapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data()
         }));
-        
-        const response = { 
-            success: true, 
-            rounds 
+
+        const response = {
+            success: true,
+            rounds
         };
 
         // Try to set cache, but don't fail if Redis is unavailable
@@ -274,7 +399,7 @@ export const fetchRounds = async (req, res) => {
             console.error("Redis error during cache setting:", redisError);
             // Continue execution even if Redis fails
         }
-        
+
         return res.status(200).json(response);
     } catch (error) {
         console.error("Error fetching rounds:", error);
@@ -289,7 +414,7 @@ export const fetchRounds = async (req, res) => {
 export const fetchQuestionsByRound = async (req, res) => {
     try {
         const { companyId, roundId, language, difficulty } = req.query;
-        
+
         if (!companyId || !roundId) {
             return res.status(400).json({
                 success: false,
@@ -348,14 +473,14 @@ export const fetchQuestionsByRound = async (req, res) => {
 
         const questionsSnapshot = await query.get();
 
-        const questions = questionsSnapshot.empty ? [] : questionsSnapshot.docs.map((doc) => ({ 
-            id: doc.id, 
-            ...doc.data() 
+        const questions = questionsSnapshot.empty ? [] : questionsSnapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data()
         }));
-        
-        const response = { 
-            success: true, 
-            questions 
+
+        const response = {
+            success: true,
+            questions
         };
 
         // Try to set cache, but don't fail if Redis is unavailable
@@ -376,7 +501,7 @@ export const fetchQuestionsByRound = async (req, res) => {
             console.error("Redis error during cache setting:", redisError);
             // Continue execution even if Redis fails
         }
-        
+
         return res.status(200).json(response);
     } catch (error) {
         console.error("Error fetching questions:", error);
@@ -390,7 +515,7 @@ export const fetchQuestionsByRound = async (req, res) => {
 
 export const explainQuestion = async (req, res) => {
     try {
-        
+
         const { questionId, question, userId } = req.body;
         if (!questionId || !question) {
             return res.status(400).json({
@@ -399,7 +524,7 @@ export const explainQuestion = async (req, res) => {
             });
         }
 
-        if(!userId){
+        if (!userId) {
             return res.status(404).json({
                 message: "User not found",
                 status: false
@@ -487,7 +612,7 @@ export const trackGenerationLimit = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Generation limit status retrieved successfully",
-            used: requestCount, 
+            used: requestCount,
             remaining: Math.max(0, 5 - requestCount),
             resetIn: timeLeft
         });
